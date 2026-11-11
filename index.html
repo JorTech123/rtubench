@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MFI Scaling Bench</title>
+<meta name="description" content="RTU analog input scaling calculator with IEC 60870-5-104 wire bytes, Wireshark-style decoding, and deadband and smoothing simulation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a loop calibrator up top (yellow body, LCD readout), then the wire analyzer and the time trace as two clean bands */
+:root{
+  --page:#F1F3F5;--surface:#FFFFFF;--inset:#F1F3F5;--ink:#101418;--muted:#5A6370;--line:#DEE2E7;
+  --signal:#F5C518;--on-signal:#17150B;--sig-field:#FFF7D6;--sig-line:rgba(23,21,11,.26);--sig-track:rgba(23,21,11,.18);
+  --lcd:#16201B;--lcd-ink:#E7F3E2;--lcd-dim:#94A99A;--lcd-pill:#24312A;--lcd-bad-bg:#5C1F18;--lcd-bad-fg:#FFC3B8;
+  --note-bg:#FFF2C2;--note-fg:#574100;
+  --ioa-bg:#E6E3F7;--ioa-fg:#3A337E;--val-bg:#D9EFE8;--val-fg:#0B5242;
+  --qds-bg:#E6E9EC;--qds-fg:#3D444C;--hdr-bg:#E2E8EE;--hdr-fg:#324250;
+  --bad-bg:#F8DFDA;--bad-fg:#8A271C;
+  --in-line:#93A3B5;--sm-line:#0E7C86;--out-line:#101418;--grid:#E3E7EB;--fault:rgba(205,72,52,.13);
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --page:#0E1114;--surface:#171B1F;--inset:#0E1114;--ink:#ECEEF1;--muted:#9AA2AD;--line:#262C33;
+  --lcd:#0B120E;
+  --note-bg:#3A3110;--note-fg:#F6E3A2;
+  --ioa-bg:#322D63;--ioa-fg:#D4CEF7;--val-bg:#0E3D33;--val-fg:#A2E3CE;
+  --qds-bg:#262C32;--qds-fg:#C8CED5;--hdr-bg:#222D38;--hdr-fg:#C1CEDB;
+  --bad-bg:#4B1E19;--bad-fg:#F5BCB2;
+  --in-line:#5D6C7E;--sm-line:#41C3CC;--out-line:#ECEEF1;--grid:#22282E;--fault:rgba(235,105,85,.18);
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --page:#0E1114;--surface:#171B1F;--inset:#0E1114;--ink:#ECEEF1;--muted:#9AA2AD;--line:#262C33;
+  --lcd:#0B120E;
+  --note-bg:#3A3110;--note-fg:#F6E3A2;
+  --ioa-bg:#322D63;--ioa-fg:#D4CEF7;--val-bg:#0E3D33;--val-fg:#A2E3CE;
+  --qds-bg:#262C32;--qds-fg:#C8CED5;--hdr-bg:#222D38;--hdr-fg:#C1CEDB;
+  --bad-bg:#4B1E19;--bad-fg:#F5BCB2;
+  --in-line:#5D6C7E;--sm-line:#41C3CC;--out-line:#ECEEF1;--grid:#22282E;--fault:rgba(235,105,85,.18);
+  color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.55}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--page)}
+.gut{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--page);border-bottom:1px solid var(--line)}
+.topin{max-width:1160px;margin:0 auto;height:56px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--f-display);font-weight:700;font-size:20px;letter-spacing:.01em;white-space:nowrap}
+.mark{width:22px;height:22px;border-radius:6px;background:var(--signal);position:relative;flex:none}
+.mark::after{content:"";position:absolute;left:5px;right:5px;top:10px;height:2px;background:var(--on-signal);box-shadow:0 -5px 0 -0.5px var(--on-signal),0 5px 0 -0.5px var(--on-signal)}
+.flow{display:flex;gap:4px;font-family:var(--f-display);font-weight:600;font-size:15px;letter-spacing:.02em;min-width:0}
+.flow a{color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:999px;white-space:nowrap}
+.flow a:hover{color:var(--ink);background:var(--surface)}
+.flow a b{color:var(--signal-ink,var(--muted));font-weight:600}
+@media (max-width:620px){.flow{display:none}}
+.wrap{max-width:1160px;margin:0 auto;padding-block:28px 56px;display:flex;flex-direction:column;gap:28px}
+h1{font-family:var(--f-display);font-weight:700;font-size:clamp(38px,6.4vw,66px);line-height:.98;letter-spacing:-.01em;margin:0;text-wrap:balance;max-width:16ch}
+.sub{color:var(--muted);font-size:17px;margin:12px 0 0;max-width:58ch}
+.presets{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;align-items:center}
+.presets .k{font-family:var(--f-display);font-weight:600;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:4px}
+button{font-family:var(--f-body);font-size:15px;font-weight:500;height:40px;padding:0 16px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;transition:border-color .15s,background .15s,transform .1s}
+button:hover{border-color:var(--muted)}
+button:active{transform:scale(.97)}
+button.go{background:var(--signal);color:var(--on-signal);border-color:transparent}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,select{font-family:var(--f-mono);font-size:15px;color:var(--ink);background:var(--inset);border:1px solid var(--line);border-radius:10px;height:42px;padding:0 12px;width:100%;min-width:0}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.seg{display:inline-flex;flex-wrap:wrap;background:var(--inset);border:1px solid var(--line);border-radius:12px;padding:3px;gap:2px}
+.seg button{height:34px;border:0;border-radius:9px;background:transparent;padding:0 12px;font-size:14px}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--page)}
+.calib{margin-top:26px;background:var(--signal);color:var(--on-signal);border-radius:24px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+@media (min-width:820px){.calib{grid-template-columns:minmax(0,5fr) minmax(0,7fr);padding:22px}}
+.ctl{display:flex;flex-direction:column;gap:12px;min-width:0}
+.calib .seg{background:transparent;border-color:var(--sig-line);align-self:flex-start}
+.calib .seg button{color:var(--on-signal)}
+.calib .seg button[aria-pressed="true"]{background:var(--on-signal);color:var(--signal)}
+.ctl label{font-family:var(--f-display);font-weight:600;font-size:14px;letter-spacing:.1em;text-transform:uppercase}
+.xrow{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;gap:8px}
+.xrow input{background:var(--sig-field);border-color:var(--sig-line);color:var(--on-signal);height:52px;font-size:22px;text-align:center;font-weight:500}
+.xrow button{height:52px;padding:0;border-radius:14px;background:var(--on-signal);color:var(--signal);border:0;font-size:24px;line-height:1}
+input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;border:0;height:34px;padding:0}
+input[type=range]::-webkit-slider-runnable-track{height:8px;border-radius:4px;background:var(--sig-track)}
+input[type=range]::-moz-range-track{height:8px;border-radius:4px;background:var(--sig-track)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;margin-top:-10px;border-radius:50%;background:var(--on-signal);border:4px solid var(--sig-field);cursor:grab}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--on-signal);border:4px solid var(--sig-field);cursor:grab}
+.ticks{display:flex;justify-content:space-between;font-family:var(--f-mono);font-size:12px;margin-top:-6px;opacity:.8}
+.lcd{background:var(--lcd);color:var(--lcd-ink);border-radius:16px;padding:16px 18px 18px;display:flex;flex-direction:column;justify-content:space-between;min-height:190px;min-width:0}
+.lcd-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;font-family:var(--f-display);font-weight:600;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--lcd-dim)}
+.pills{display:flex;gap:6px;flex-wrap:wrap}
+.pill{font-family:var(--f-mono);font-size:12px;letter-spacing:0;text-transform:none;padding:3px 9px;border-radius:999px;background:var(--lcd-pill);color:var(--lcd-dim)}
+.pill.bad{background:var(--lcd-bad-bg);color:var(--lcd-bad-fg)}
+.big{font-family:var(--f-mono);font-weight:500;font-size:clamp(54px,11vw,92px);line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;margin:16px 0 10px;overflow-wrap:anywhere}
+.lcd-sub{font-family:var(--f-mono);font-size:13px;color:var(--lcd-dim)}
+.note{background:var(--note-bg);color:var(--note-fg);padding:12px 16px;border-radius:14px;font-size:15px;margin-top:14px}
+.note b{font-weight:600}
+.setup{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px 20px;margin-top:22px;align-items:end}
+.grp{display:flex;flex-direction:column;gap:6px;min-width:0}
+.glbl{font-family:var(--f-display);font-weight:600;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.suffix{position:relative}.suffix input{padding-right:34px}.suffix span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-family:var(--f-mono);font-size:14px}
+.bar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin-top:18px}
+details.calc summary,details.more summary{cursor:pointer;font-weight:600;color:var(--muted);font-size:15px}
+details.calc summary:hover,details.more summary:hover{color:var(--ink)}
+pre.trace{font-family:var(--f-mono);font-size:13px;line-height:1.7;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:12px 0 0;overflow-x:auto;white-space:pre}
+.msg{font-size:14px;color:var(--muted);word-break:break-all}
+.band{background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:22px;min-width:0}
+@media (max-width:560px){.band{padding:18px 14px;border-radius:18px}}
+.bhead{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 20px;margin-bottom:18px}
+h2{font-family:var(--f-display);font-weight:700;font-size:clamp(28px,4vw,38px);line-height:1;margin:0}
+.bhead p{margin:0;color:var(--muted);max-width:52ch}
+h3{font-family:var(--f-display);font-weight:600;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+.objs{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.obj{background:var(--inset);border-radius:16px;padding:14px 16px;min-width:0}
+.obj .tn{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}
+.obj .tn b{font-family:var(--f-display);font-weight:700;font-size:20px}
+.obj .tn span{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.hx{display:flex;flex-wrap:wrap;gap:5px;font-family:var(--f-mono);font-size:15px}
+.by{padding:4px 7px;border-radius:7px;border:1.5px solid transparent;font-variant-numeric:tabular-nums}
+.by.ioa{background:var(--ioa-bg);color:var(--ioa-fg)}
+.by.val{background:var(--val-bg);color:var(--val-fg)}
+.by.qds{background:var(--qds-bg);color:var(--qds-fg)}
+.by.hdr{background:var(--hdr-bg);color:var(--hdr-fg)}
+.by.bad{background:var(--bad-bg);color:var(--bad-fg)}
+.by.chg{animation:flash .9s ease-out}
+@keyframes flash{0%{box-shadow:0 0 0 3px var(--signal)}100%{box-shadow:0 0 0 3px transparent}}
+#frameHex .by{cursor:pointer}
+.by.on{border-color:var(--ink)}
+.small{font-size:14px;color:var(--muted);margin:10px 0 0}
+.wiregrid{display:grid;grid-template-columns:minmax(0,1fr);gap:26px;margin-top:26px}
+@media (min-width:900px){.wiregrid{grid-template-columns:minmax(0,4fr) minmax(0,7fr)}}
+.fset{display:flex;flex-direction:column;gap:14px;min-width:0}
+details.more[open] summary{margin-bottom:12px}
+details.more .grp+.grp{margin-top:12px}
+.tree{font-family:var(--f-mono);font-size:13px;line-height:1.65;background:var(--inset);border-radius:14px;padding:10px 6px;overflow-x:auto;margin-top:14px}
+.ln{white-space:pre;padding:0 10px;border-radius:6px;cursor:pointer;width:max-content;min-width:100%}
+.ln.h{font-weight:500}
+.ln.d{color:var(--muted)}
+.ln.sel{background:var(--signal);color:var(--on-signal)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin-top:12px}
+.sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.simctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px 22px;margin-bottom:18px}
+.simctl label{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+.simctl output{font-family:var(--f-mono);font-size:14px;color:var(--ink)}
+.simctl input[type=range]{height:30px}
+.simctl input[type=range]::-webkit-slider-runnable-track{height:6px;background:var(--line)}
+.simctl input[type=range]::-moz-range-track{height:6px;background:var(--line)}
+.simctl input[type=range]::-webkit-slider-thumb{width:20px;height:20px;margin-top:-7px;background:var(--ink);border:3px solid var(--signal)}
+.simctl input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--ink);border:3px solid var(--signal)}
+.chartbox{position:relative;width:100%;height:280px;background:var(--inset);border-radius:16px;padding:8px}
+canvas{display:block;width:100%;height:100%}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:16px}
+.stat{border-top:3px solid var(--line);padding-top:8px}
+.stat.hot{border-top-color:var(--signal)}
+.stat span{display:block;font-family:var(--f-display);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.stat b{font-family:var(--f-mono);font-weight:500;font-size:26px;font-variant-numeric:tabular-nums}
+.simmsg{font-size:15px;min-height:24px;margin-top:12px;color:var(--note-fg)}
+footer{font-size:14px;color:var(--muted);max-width:80ch}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header class="top gut">
+  <div class="topin">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>MFI scaling bench</div>
+    <nav class="flow" aria-label="Sections"><a href="#scale">mA → value</a><a href="#wire">→ bytes</a><a href="#time">→ over time</a></nav>
+  </div>
+</header>
+
+<main class="wrap gut">
+  <section id="scale" aria-labelledby="h1">
+    <h1 id="h1">From milliamps to bytes on the wire</h1>
+    <p class="sub">Scale an RTU analog input the way the RTU does, and see exactly what it sends over IEC 60870-5-104.</p>
+    <div class="presets" role="group" aria-label="Examples">
+      <span class="k">Try</span>
+      <button id="pr55" type="button">The 55 trap</button>
+      <button id="prBi" type="button">±10 mA to ±100</button>
+      <button id="prLz" type="button">4–20 mA level</button>
+    </div>
+
+    <div class="calib">
+      <div class="ctl">
+        <div class="seg" role="group" aria-label="Mode"><button id="mOut" type="button" aria-pressed="true">Calc output</button><button id="mIn" type="button" aria-pressed="false">Calc input</button></div>
+        <label for="xin" id="xinLbl">Input (mA)</label>
+        <div class="xrow"><button id="dec" type="button" aria-label="Decrease">−</button><input id="xin" type="number" step="0.01" value="1"><button id="inc" type="button" aria-label="Increase">+</button></div>
+        <input id="xs" type="range" min="-11" max="11" step="0.05" value="1" aria-label="Input slider">
+        <div class="ticks"><span id="tk0"></span><span id="tk1"></span><span id="tk2"></span></div>
+      </div>
+      <div class="lcd" aria-live="polite">
+        <div class="lcd-top"><span id="bigUnit">MFI output</span><span class="pills" id="pills"></span></div>
+        <div class="big" id="bigVal">55.00</div>
+        <div class="lcd-sub" id="lcdSub"></div>
+      </div>
+    </div>
+    <div class="note" id="note" hidden></div>
+
+    <div class="setup">
+      <div class="grp"><span class="glbl">Signal type</span>
+        <div class="seg" role="group" aria-label="Signal type"><button type="button" data-type="bi" aria-pressed="true">Bipolar</button><button type="button" data-type="uni" aria-pressed="false">Unipolar</button><button type="button" data-type="lz" aria-pressed="false">4–20 mA</button></div></div>
+      <div class="grp"><span class="glbl">Signal range</span>
+        <div class="seg" role="group" aria-label="Signal range"><button type="button" data-range="1" aria-pressed="false">1</button><button type="button" data-range="2" aria-pressed="false">2</button><button type="button" data-range="5" aria-pressed="false">5</button><button type="button" data-range="10" aria-pressed="true">10</button><button type="button" data-range="20" aria-pressed="false">20 mA</button></div></div>
+      <div class="grp"><label class="glbl" for="scMin">Scaling min / max</label>
+        <div class="pair"><input id="scMin" type="number" step="any" value="0" aria-label="Scaling min"><input id="scMax" type="number" step="any" value="100" aria-label="Scaling max"></div></div>
+      <div class="grp"><label class="glbl" for="zs">Zero supervision</label>
+        <div class="suffix"><input id="zs" type="number" step="0.01" min="0" value="0.25"><span>%</span></div></div>
+    </div>
+
+    <div class="bar">
+      <button id="share" type="button">Copy link to this setup</button>
+      <span class="msg" id="shareMsg"></span>
+    </div>
+    <details class="calc" style="margin-top:14px"><summary>Show the calculation</summary><pre class="trace" id="trace"></pre></details>
+  </section>
+
+  <section id="wire" class="band" aria-labelledby="hWire">
+    <div class="bhead"><h2 id="hWire">On the wire</h2><p>The same value as type 9, 11 and 13. Bytes that change light up as you move the input.</p></div>
+    <div class="objs" id="objRows"></div>
+    <div class="wiregrid">
+      <div class="fset">
+        <h3>Frame</h3>
+        <div class="grp"><span class="glbl">Type ID</span>
+          <div class="seg" role="group" aria-label="Frame type" style="align-self:flex-start"><button type="button" data-tid="9" aria-pressed="true">9 · normalized</button><button type="button" data-tid="11" aria-pressed="false">11 · scaled</button><button type="button" data-tid="13" aria-pressed="false">13 · float</button></div></div>
+        <div class="grp"><label class="glbl" for="ioaH">IOA high · mid · low</label>
+          <div class="trio"><input id="ioaH" type="number" min="0" max="255" value="1" aria-label="IOA high byte"><input id="ioaM" type="number" min="0" max="255" value="2" aria-label="IOA middle byte"><input id="ioaL" type="number" min="0" max="255" value="3" aria-label="IOA low byte"></div></div>
+        <div class="grp"><label class="glbl" for="ioaD">IOA decimal</label><input id="ioaD" type="number" min="0" max="16777215" value="66051"></div>
+        <p class="small" id="ioaNote" style="margin:0"></p>
+        <details class="more"><summary>More frame fields</summary>
+          <div class="grp"><label class="glbl" for="ca">Common address</label><input id="ca" type="number" min="0" max="65535" value="1"></div>
+          <div class="grp"><label class="glbl" for="cot">Cause of transmission</label><select id="cot"><option value="3">Spontaneous (3)</option><option value="1">Periodic (1)</option><option value="20">Interrogation (20)</option></select></div>
+          <div class="grp"><label class="glbl" for="tx">Tx / Rx sequence</label><div class="pair"><input id="tx" type="number" min="0" max="32767" value="5" aria-label="Send sequence number"><input id="rx" type="number" min="0" max="32767" value="2" aria-label="Receive sequence number"></div></div>
+        </details>
+      </div>
+      <div style="min-width:0">
+        <h3>Decoded like Wireshark</h3>
+        <div class="hx" id="frameHex"></div>
+        <div class="bar" style="margin-top:12px"><button id="copyHex" type="button">Copy hex</button><span class="msg" id="copyMsg"></span></div>
+        <div class="tree" id="tree"></div>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--hdr-bg)"></i>APCI and ASDU header</span>
+          <span><i class="sw" style="background:var(--ioa-bg)"></i>IOA, low byte first</span>
+          <span><i class="sw" style="background:var(--val-bg)"></i>Value, little-endian</span>
+          <span><i class="sw" style="background:var(--qds-bg)"></i>QDS: IV 0x80, OV 0x01</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="time" class="band" aria-labelledby="hTime">
+    <div class="bhead"><h2 id="hTime">Over time</h2><p>How smoothing and deadband shape what the master actually receives.</p></div>
+    <div class="simctl">
+      <div><label class="glbl" for="gen">Test signal</label>
+        <select id="gen"><option value="step" selected>Step</option><option value="ramp">Ramp</option><option value="sine">Sine</option><option value="hold">Hold the input above</option></select></div>
+      <div><label class="glbl" for="noise">Noise <output id="noiseO">2.0 %</output></label><input id="noise" type="range" min="0" max="10" step="0.5" value="2"></div>
+      <div><label class="glbl" for="tau">Smoothing <output id="tauO">3 s</output></label><input id="tau" type="range" min="0" max="20" step="1" value="3"></div>
+      <div><label class="glbl" for="db">Deadband</label>
+        <select id="db"><option value="abs">Absolute threshold</option><option value="int">Integrating threshold</option></select></div>
+      <div><label class="glbl" for="th">Threshold <output id="thO">2.0 %</output></label><input id="th" type="range" min="0" max="10" step="0.1" value="2"></div>
+    </div>
+    <div class="chartbox"><canvas id="cv" role="img" aria-label="Simulated input, smoothed value and transmitted value over time, in percent of signal range"></canvas></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--in-line)"></i>Input</span>
+      <span><i class="sw" style="background:var(--sm-line)"></i>Smoothed</span>
+      <span><i class="sw" style="background:var(--out-line)"></i>Sent to master</span>
+      <span><i class="sw" style="background:var(--signal)"></i>One message</span>
+      <span><i class="sw" style="background:var(--fault)"></i>IV or OV set</span>
+      <span>% of signal range, one sample per second</span>
+    </div>
+    <div class="bar">
+      <button id="run" type="button" class="go">Stop</button>
+      <button id="clr" type="button">Clear</button>
+      <button id="spd" type="button">Speed 1x</button>
+      <button id="brk" type="button">Wire break</button>
+      <button id="ovr" type="button">Overrange</button>
+    </div>
+    <div class="simmsg" id="simMsg" aria-live="polite"></div>
+    <div class="stats">
+      <div class="stat"><span>Samples</span><b id="stN">0</b></div>
+      <div class="stat hot"><span>Messages sent</span><b id="stS">0</b></div>
+      <div class="stat"><span>Suppressed</span><b id="stP">0</b></div>
+      <div class="stat hot"><span>Msgs per minute</span><b id="stR">0</b></div>
+      <div class="stat"><span>Last sent value</span><b id="stV">–</b></div>
+    </div>
+  </section>
+
+  <footer>Bipolar scaling maps −100 % of the signal range to Scaling min and +100 % to Scaling max. Type 9 carries only the share of the signal range, so the master applies its own scaling. IV is set on a live-zero input below 3.6 mA or above 21 mA (NAMUR NE 43); OV is set when the signal leaves its nominal range. On bipolar and unipolar inputs a broken wire reads as a valid 0 mA.</footer>
+</main>
+
+<script id="core">
+const MFI=(()=>{
+  const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+  const span=type=>type==='bi'?[-100,100]:[0,100];
+  function scale(p){
+    const [lo,hi]=span(p.type);
+    const pct=p.type==='lz'?(p.x-4)/16*100:p.x/p.range*100;
+    const iv=p.type==='lz'&&(p.x<3.6||p.x>21);
+    const ov=!iv&&(pct<lo-1e-9||pct>hi+1e-9);
+    let pc=clamp(pct,lo,hi);
+    const zeroed=pc!==0&&Math.abs(pc)<p.zs;
+    if(zeroed)pc=0;
+    const t=(pc-lo)/(hi-lo);
+    return {pct,pc,iv,ov,zeroed,t,value:p.min+t*(p.max-p.min),frac:pc/100,lo,hi};
+  }
+  function inverse(p,y){
+    const d=p.max-p.min;
+    if(d===0)return null;
+    const t=(y-p.min)/d;
+    const x=p.type==='bi'?(t*2-1)*p.range:p.type==='uni'?t*p.range:4+t*16;
+    return {x,t,outside:t<-1e-9||t>1+1e-9};
+  }
+  const nva=f=>clamp(Math.round(f*32768),-32768,32767);
+  const sva=v=>clamp(Math.round(v),-32768,32767);
+  function le16(v){const d=new DataView(new ArrayBuffer(2));d.setInt16(0,v,true);return [d.getUint8(0),d.getUint8(1)];}
+  function f32(v){const d=new DataView(new ArrayBuffer(4));d.setFloat32(0,v,true);return {bytes:[0,1,2,3].map(i=>d.getUint8(i)),back:d.getFloat32(0,true)};}
+  const qds=(iv,ov)=>(iv?0x80:0)|(ov?0x01:0);
+  const ioaDec=([h,m,l])=>h*65536+m*256+l;
+  const ioaFromDec=d=>[(d>>16)&255,(d>>8)&255,d&255];
+  function valueBytes(tid,r){
+    if(tid===9)return le16(nva(r.frac));
+    if(tid===11)return le16(sva(r.value));
+    return f32(r.value).bytes;
+  }
+  function frame(o){
+    const asdu=[o.tid,0x01,o.cot&0x3f,0,o.ca&255,(o.ca>>8)&255,o.ioa[2],o.ioa[1],o.ioa[0],...o.vb,o.q];
+    const tx=(o.tx<<1)&0xffff,rx=(o.rx<<1)&0xffff;
+    return [0x68,4+asdu.length,tx&255,tx>>8,rx&255,rx>>8,...asdu];
+  }
+  return {clamp,span,scale,inverse,nva,sva,le16,f32,qds,ioaDec,ioaFromDec,valueBytes,frame};
+})();
+</script>
+
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const hx=b=>b.toString(16).toUpperCase().padStart(2,'0');
+const fmt=(n,d=2)=>(Math.abs(n)<0.5*Math.pow(10,-d)?0:n).toFixed(d);
+const num=n=>Number.isInteger(n)?String(n):fmt(n);
+const par=n=>n<0?`(${num(n)})`:num(n);
+const TYPE_NAME={bi:'Bipolar',uni:'Unipolar',lz:'Live zero'};
+const TID={9:['M_ME_NA_1','normalized'],11:['M_ME_NB_1','scaled'],13:['M_ME_NC_1','short float']};
+const COT={1:'Per/Cyc',3:'Spont',20:'Inrogen'};
+let REDUCE=false;try{REDUCE=matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(_){}
+
+const S={type:'bi',range:10,min:0,max:100,zs:0.25,mode:'out',x:1,target:55,tid:9,ioa:[1,2,3],ca:1,cot:3,tx:5,rx:2,sel:null};
+const params=()=>({type:S.type,range:S.range,min:S.min,max:S.max,zs:S.zs});
+function current(){
+  const p=params();
+  if(S.mode==='out')return {x:S.x,r:MFI.scale({...p,x:S.x}),inv:null};
+  const inv=MFI.inverse(p,S.target);
+  const x=inv?inv.x:0;
+  return {x,r:MFI.scale({...p,x}),inv};
+}
+
+function sliderSpec(){
+  if(S.mode==='out'){
+    if(S.type==='bi')return {lo:-1.1*S.range,hi:1.1*S.range,step:S.range/200,labels:[`-${num(S.range)}`,'0',`${num(S.range)} mA`]};
+    if(S.type==='uni')return {lo:-0.05*S.range,hi:1.1*S.range,step:S.range/200,labels:['0',num(S.range/2),`${num(S.range)} mA`]};
+    return {lo:2,hi:22,step:0.05,labels:['4','12','20 mA']};
+  }
+  const a=Math.min(S.min,S.max),b=Math.max(S.min,S.max),w=(b-a)||1;
+  return {lo:a-0.05*w,hi:b+0.05*w,step:w/400,labels:[num(a),num((a+b)/2),num(b)]};
+}
+function syncSlider(){
+  const sp=sliderSpec(),xs=$('xs');
+  xs.min=sp.lo;xs.max=sp.hi;xs.step=sp.step;xs.value=S.mode==='out'?S.x:S.target;
+  $('tk0').textContent=sp.labels[0];$('tk1').textContent=sp.labels[1];$('tk2').textContent=sp.labels[2];
+}
+
+function renderResult(){
+  const {x,r,inv}=current();
+  if(S.mode==='out'){$('bigVal').textContent=r.iv?'— — —':fmt(r.value);$('bigUnit').textContent=r.iv?'Value invalid':'MFI output';$('lcdSub').textContent=`${fmt(x)} mA · ${fmt(r.pct)} % of signal range`;}
+  else{$('bigVal').textContent=inv?fmt(x):'— — —';$('bigUnit').textContent='Required input, mA';$('lcdSub').textContent=`target ${fmt(S.target)} · ${fmt(r.pct)} % of signal range`;}
+  const pills=[`<span class="pill${r.iv?' bad':''}">IV=${r.iv?1:0}</span>`,`<span class="pill${r.ov?' bad':''}">OV=${r.ov?1:0}</span>`];
+  if(r.zeroed)pills.push('<span class="pill">zero suppressed</span>');
+  $('pills').innerHTML=pills.join('');
+  let msg='';
+  if(S.mode==='in'&&!inv)msg='Scaling min and max are equal, so no input can be calculated.';
+  else if(S.mode==='in'&&inv.outside)msg=`<b>Out of span.</b> ${fmt(S.target)} lies outside ${num(S.min)} to ${num(S.max)}, so ${fmt(x)} mA is beyond the signal range.`;
+  else if(r.iv)msg=`<b>Loop fault.</b> ${fmt(x)} mA is outside 3.6–21 mA, so the RTU sends the value with IV=1. This is how a broken 4–20 mA loop shows up.`;
+  else if(S.type==='bi'&&S.mode==='out'&&x>=0&&!r.ov){
+    const alt=S.min+MFI.clamp(x/S.range,0,1)*(S.max-S.min);
+    if(Math.abs(alt-r.value)>0.005)msg=`<b>Bipolar puts Scaling min at −${num(S.range)} mA, not at 0 mA.</b> Read as unipolar, ${fmt(x)} mA would give ${fmt(alt)}.`;
+  }
+  $('note').innerHTML=msg;$('note').hidden=!msg;
+  const rng=S.type==='bi'?`-${num(S.range)} to ${num(S.range)} mA`:S.type==='uni'?`0 to ${num(S.range)} mA`:'4 to 20 mA';
+  const L=['=== MFI scaling calculation ===','',`Signal type:  ${TYPE_NAME[S.type]}`,`Signal range: ${rng}`,''];
+  if(S.mode==='in'&&inv)L.push(`0. Target ${fmt(S.target)} needs ${fmt(x)} mA`);
+  if(S.type==='lz')L.push(`1. Raw input: (${fmt(x)} - 4) / 16 mA = ${fmt(r.pct)} %`);
+  else L.push(`1. Raw input: ${fmt(x)} mA = ${fmt(r.pct)} % of ${num(S.range)} mA`);
+  if(r.iv)L.push('   Below 3.6 mA or above 21 mA: IV=1');
+  if(r.ov)L.push(`   Outside ${r.lo}…${r.hi} %: clamped, OV=1`);
+  L.push(`2. After zero supervision (±${num(S.zs)} %): ${fmt(r.pc)} %${r.zeroed?'  (forced to 0)':''}`);
+  L.push(`3. Position in span: ${S.type==='bi'?`(${fmt(r.pc)} + 100) / 200`:`${fmt(r.pc)} / 100`} = ${r.t.toFixed(4)}`);
+  L.push(`4. MFI value: ${par(S.min)} + ${r.t.toFixed(4)} × (${par(S.max)} - ${par(S.min)}) = ${fmt(r.value)}`);
+  L.push(`   (scaling: ${S.type==='bi'?'-100 %':'0 %'} = ${num(S.min)}, +100 % = ${num(S.max)})`);
+  $('trace').textContent=L.join('\n');
+}
+
+const PREV={};
+function chips(key,bytes,cls){
+  const prev=PREV[key];PREV[key]=bytes.slice();
+  return bytes.map((b,i)=>{const chg=!REDUCE&&prev&&prev.length===bytes.length&&prev[i]!==b;return `<span class="by ${cls(i)}${chg?' chg':''}" data-i="${i}">${hx(b)}</span>`;}).join('');
+}
+
+function renderObjRows(r){
+  const q=MFI.qds(r.iv,r.ov),wire=[S.ioa[2],S.ioa[1],S.ioa[0]];
+  $('objRows').innerHTML=[9,11,13].map(tid=>{
+    const vb=MFI.valueBytes(tid,r),all=[...wire,...vb,q],n=all.length;
+    const cls=i=>i<3?'ioa':i===n-1?(q?'bad':'qds'):'val';
+    let note='';
+    if(tid===9){const v=MFI.nva(r.frac);note=`Share of signal range ${(v/32768).toFixed(6)} → ${v}. Same bytes for any scaling; the master scales it.`;}
+    if(tid===11){const v=MFI.sva(r.value);note=`Integer ${v}.`+(Math.abs(r.value-v)>=0.005&&Math.abs(r.value)<=32767?` ${fmt(r.value)} loses its decimals.`:'')+(Math.abs(r.value)>32767?' Clamped to 16 bit.':'');}
+    if(tid===13){const b=MFI.f32(r.value).back;note=`IEEE 754 single precision, reads back as ${Number(b.toPrecision(7))}.`;}
+    return `<div class="obj"><div class="tn"><b>Type ${tid}</b><span>${TID[tid][0]} · ${TID[tid][1]}</span></div><div class="hx">${chips('o'+tid,all,cls)}</div><p class="small">${note}</p></div>`;
+  }).join('');
+}
+
+let LINES=[],BYTES=[];
+function renderFrame(r){
+  const q=MFI.qds(r.iv,r.ov),vb=MFI.valueBytes(S.tid,r);
+  BYTES=MFI.frame({tid:S.tid,cot:S.cot,ca:S.ca,ioa:S.ioa,tx:S.tx,rx:S.rx,vb,q});
+  const n=BYTES.length,dec=MFI.ioaDec(S.ioa),tn=TID[S.tid][0],cn=COT[S.cot]||String(S.cot);
+  const cls=i=>i<12?'hdr':i<15?'ioa':i===n-1?(q?'bad':'qds'):'val';
+  $('frameHex').innerHTML=chips('f'+S.tid,BYTES,cls);
+  let vtxt;
+  if(S.tid===9)vtxt=(MFI.nva(r.frac)/32768).toFixed(6);
+  else if(S.tid===11)vtxt=String(MFI.sva(r.value));
+  else vtxt=String(Number(MFI.f32(r.value).back.toPrecision(7)));
+  const b6=S.cot.toString(2).padStart(6,'0'),ov=r.ov?1:0,iv=r.iv?1:0;
+  LINES=[
+    {t:`▾ IEC 60870-5-104-Apci: -> I (${S.tx},${S.rx})`,r:[0,5],c:'h'},
+    {t:'    START: 0x68',r:[0,0]},
+    {t:`    ApduLen: ${BYTES[1]}`,r:[1,1]},
+    {t:'    .... ...0 = Type: I (0x00)',r:[2,2]},
+    {t:`    Tx: ${S.tx}`,r:[2,3]},
+    {t:`    Rx: ${S.rx}`,r:[4,5]},
+    {t:`▾ IEC 60870-5-101/104 ASDU: ASDU=${S.ca} ${tn} ${cn} IOA=${dec}`,r:[6,n-1],c:'h'},
+    {t:`    TypeId: ${tn} (${S.tid})`,r:[6,6]},
+    {t:'    0... .... = SQ: False',r:[7,7]},
+    {t:'    .000 0001 = NumIx: 1',r:[7,7]},
+    {t:`    ..${b6.slice(0,2)} ${b6.slice(2)} = CauseTx: ${cn} (${S.cot})`,r:[8,8]},
+    {t:'    .0.. .... = Negative: False',r:[8,8]},
+    {t:'    0... .... = Test: False',r:[8,8]},
+    {t:'    OA: 0',r:[9,9]},
+    {t:`    Addr: ${S.ca}`,r:[10,11]},
+    {t:`  ▾ IOA: ${dec}`,r:[12,n-1],c:'h'},
+    {t:`      IOA: ${dec}`,r:[12,14]},
+    {t:`      Value: ${vtxt}`,r:[15,n-2]},
+    {t:`    ▾ QDS: 0x${hx(q)}`,r:[n-1,n-1],c:'h'},
+    {t:`        .... ...${ov} = OV: ${ov?'Overflow':'No overflow'}`,r:[n-1,n-1],c:'d'},
+    {t:'        ...0 .... = BL: Not blocked',r:[n-1,n-1],c:'d'},
+    {t:'        ..0. .... = SB: Not substituted',r:[n-1,n-1],c:'d'},
+    {t:'        .0.. .... = NT: Topical',r:[n-1,n-1],c:'d'},
+    {t:`        ${iv}... .... = IV: ${iv?'Invalid':'Valid'}`,r:[n-1,n-1],c:'d'}
+  ];
+  $('tree').innerHTML=LINES.map((l,i)=>`<div class="ln ${l.c||''}" tabindex="0" data-l="${i}">${l.t.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div>`).join('');
+  if(S.sel===null||S.sel>=LINES.length)S.sel=17;
+  pick(S.sel);
+  $('ioaNote').textContent=`${dec} = ${S.ioa[0]}×65536 + ${S.ioa[1]}×256 + ${S.ioa[2]}. Sent low byte first: ${hx(S.ioa[2])} ${hx(S.ioa[1])} ${hx(S.ioa[0])}.`;
+}
+function pick(i){
+  S.sel=i;
+  document.querySelectorAll('#tree .ln').forEach(el=>el.classList.toggle('sel',+el.dataset.l===i));
+  const [a,b]=LINES[i].r;
+  document.querySelectorAll('#frameHex .by').forEach(el=>{const k=+el.dataset.i;el.classList.toggle('on',k>=a&&k<=b);});
+}
+$('tree').addEventListener('click',e=>{const el=e.target.closest('.ln');if(el)pick(+el.dataset.l);});
+$('tree').addEventListener('keydown',e=>{const el=e.target.closest('.ln');if(el&&(e.key==='Enter'||e.key===' ')){e.preventDefault();pick(+el.dataset.l);}});
+$('frameHex').addEventListener('click',e=>{
+  const el=e.target.closest('.by');if(!el)return;const k=+el.dataset.i;
+  let best=-1,w=1e9;
+  LINES.forEach((l,i)=>{if(k>=l.r[0]&&k<=l.r[1]&&l.r[1]-l.r[0]<w&&l.c!=='d'){w=l.r[1]-l.r[0];best=i;}});
+  if(best>=0)pick(best);
+});
+function copyText(text,out,okMsg){
+  const show=m=>{$(out).textContent=m;};
+  try{navigator.clipboard.writeText(text).then(()=>{show(okMsg);setTimeout(()=>show(''),2400);},()=>show(text));}catch(_){show(text);}
+}
+$('copyHex').addEventListener('click',()=>copyText(BYTES.map(hx).join(' '),'copyMsg','Copied'));
+
+function toQuery(){
+  return new URLSearchParams({t:S.type,r:S.range,min:S.min,max:S.max,zs:S.zs,m:S.mode,x:S.mode==='out'?S.x:S.target,tid:S.tid,ioa:MFI.ioaDec(S.ioa),ca:S.ca,cot:S.cot}).toString();
+}
+$('share').addEventListener('click',()=>copyText(location.href.split('?')[0].split('#')[0]+'?'+toQuery(),'shareMsg','Link copied. It opens with these exact settings.'));
+
+function renderAll(){
+  renderResult();
+  const {r}=current();
+  renderObjRows(r);
+  renderFrame(r);
+  document.querySelectorAll('[data-type]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.type===S.type));
+  document.querySelectorAll('[data-range]').forEach(b=>{b.setAttribute('aria-pressed',S.type!=='lz'&&+b.dataset.range===S.range);b.disabled=S.type==='lz';});
+  document.querySelectorAll('[data-tid]').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.tid===S.tid));
+  $('xinLbl').textContent=S.mode==='out'?'Input (mA)':'Target value';
+  $('mOut').setAttribute('aria-pressed',S.mode==='out');
+  $('mIn').setAttribute('aria-pressed',S.mode==='in');
+  syncSlider();
+  try{history.replaceState(null,'','?'+toQuery()+location.hash);}catch(_){}
+}
+function syncInputs(){
+  $('scMin').value=S.min;$('scMax').value=S.max;$('zs').value=S.zs;
+  $('xin').value=S.mode==='out'?S.x:S.target;
+  $('ioaH').value=S.ioa[0];$('ioaM').value=S.ioa[1];$('ioaL').value=S.ioa[2];$('ioaD').value=MFI.ioaDec(S.ioa);
+  $('ca').value=S.ca;$('cot').value=String(S.cot);$('tx').value=S.tx;$('rx').value=S.rx;
+}
+
+const val=id=>{const v=parseFloat($(id).value);return Number.isFinite(v)?v:null;};
+const ival=(id,lo,hi)=>{const v=parseInt($(id).value,10);return Number.isFinite(v)?MFI.clamp(v,lo,hi):null;};
+document.querySelectorAll('[data-type]').forEach(b=>b.addEventListener('click',()=>{
+  if(S.type===b.dataset.type)return;S.type=b.dataset.type;
+  if(S.mode==='out'&&S.type==='lz'&&(S.x<4||S.x>20)){S.x=12;$('xin').value=12;}
+  renderAll();resetSim(true);
+}));
+document.querySelectorAll('[data-range]').forEach(b=>b.addEventListener('click',()=>{S.range=+b.dataset.range;renderAll();}));
+['scMin','scMax','zs'].forEach(id=>$(id).addEventListener('input',()=>{const v=val(id);if(v===null)return;if(id==='scMin')S.min=v;else if(id==='scMax')S.max=v;else S.zs=Math.max(0,v);renderAll();}));
+function setPrimary(v){if(S.mode==='out')S.x=v;else S.target=v;}
+$('xin').addEventListener('input',()=>{const v=val('xin');if(v===null)return;setPrimary(v);renderAll();});
+$('xs').addEventListener('input',()=>{const v=+$('xs').value;setPrimary(v);$('xin').value=Number(v.toFixed(3));renderAll();});
+function nudge(dir){
+  const st=S.mode==='out'?(S.type==='lz'?0.1:S.range/100):Math.abs(S.max-S.min)/100||1;
+  const v=Math.round(((S.mode==='out'?S.x:S.target)+dir*st)*1000)/1000;
+  setPrimary(v);$('xin').value=v;renderAll();
+}
+$('dec').addEventListener('click',()=>nudge(-1));
+$('inc').addEventListener('click',()=>nudge(1));
+$('mOut').addEventListener('click',()=>{if(S.mode==='out')return;S.mode='out';$('xin').value=S.x;renderAll();});
+$('mIn').addEventListener('click',()=>{if(S.mode==='in')return;const {r}=current();S.target=Math.round(r.value*100)/100;S.mode='in';$('xin').value=S.target;renderAll();});
+document.querySelectorAll('[data-tid]').forEach(b=>b.addEventListener('click',()=>{S.tid=+b.dataset.tid;renderAll();}));
+['ioaH','ioaM','ioaL'].forEach((id,k)=>$(id).addEventListener('input',()=>{const v=ival(id,0,255);if(v===null)return;S.ioa[k]=v;$('ioaD').value=MFI.ioaDec(S.ioa);renderAll();}));
+$('ioaD').addEventListener('input',()=>{const v=ival('ioaD',0,16777215);if(v===null)return;S.ioa=MFI.ioaFromDec(v);$('ioaH').value=S.ioa[0];$('ioaM').value=S.ioa[1];$('ioaL').value=S.ioa[2];renderAll();});
+$('ca').addEventListener('input',()=>{const v=ival('ca',0,65535);if(v!==null){S.ca=v;renderAll();}});
+$('cot').addEventListener('change',()=>{S.cot=+$('cot').value;renderAll();});
+$('tx').addEventListener('input',()=>{const v=ival('tx',0,32767);if(v!==null){S.tx=v;renderAll();}});
+$('rx').addEventListener('input',()=>{const v=ival('rx',0,32767);if(v!==null){S.rx=v;renderAll();}});
+
+function preset(o){Object.assign(S,o,{mode:'out'});syncInputs();renderAll();resetSim(true);}
+$('pr55').addEventListener('click',()=>preset({type:'bi',range:10,min:0,max:100,x:1}));
+$('prBi').addEventListener('click',()=>preset({type:'bi',range:10,min:-100,max:100,x:1}));
+$('prLz').addEventListener('click',()=>preset({type:'lz',range:10,min:0,max:100,x:12}));
+
+function fromQuery(){
+  let q;try{q=new URLSearchParams(location.search);}catch(_){return;}
+  if(!q.has('t'))return;
+  const f=k=>{const v=parseFloat(q.get(k));return Number.isFinite(v)?v:null;};
+  if(['bi','uni','lz'].includes(q.get('t')))S.type=q.get('t');
+  if([1,2,5,10,20].includes(f('r')))S.range=f('r');
+  if(f('min')!==null)S.min=f('min');
+  if(f('max')!==null)S.max=f('max');
+  if(f('zs')!==null)S.zs=Math.max(0,f('zs'));
+  S.mode=q.get('m')==='in'?'in':'out';
+  if(f('x')!==null)setPrimary(f('x'));
+  if([9,11,13].includes(f('tid')))S.tid=f('tid');
+  if(f('ioa')!==null)S.ioa=MFI.ioaFromDec(MFI.clamp(Math.round(f('ioa')),0,16777215));
+  if(f('ca')!==null)S.ca=MFI.clamp(Math.round(f('ca')),0,65535);
+  if([1,3,20].includes(f('cot')))S.cot=f('cot');
+  syncInputs();
+}
+
+const SIM={running:false,buf:[],max:240,k:0,sm:null,last:null,lastQ:null,acc:0,sent:0,supp:0,speed:1,fault:null,faultLeft:0,timer:null,gen:'step',noise:2,tau:3,db:'abs',th:2};
+const fullMa=p=>p.type==='bi'?2*p.range:p.type==='uni'?p.range:16;
+const spanToMa=(p,s)=>p.type==='bi'?(s/100*2-1)*p.range:p.type==='uni'?s/100*p.range:4+s/100*16;
+const rnd=()=>(Math.random()+Math.random()+Math.random()-1.5)/1.5;
+function genMa(k){
+  const p=params();let x;
+  if(SIM.gen==='hold')x=current().x;
+  else{
+    let s;
+    if(SIM.gen==='step')s=Math.floor(k/40)%2?80:20;
+    else if(SIM.gen==='ramp'){const ph=k%120;s=ph<60?ph/60*100:(120-ph)/60*100;}
+    else s=50+40*Math.sin(k/18);
+    x=spanToMa(p,s);
+  }
+  x+=rnd()*SIM.noise/100*fullMa(p);
+  if(SIM.faultLeft>0){x=SIM.fault==='break'?0:spanToMa(p,112);SIM.faultLeft--;}
+  return x;
+}
+function step(){
+  const p=params(),r=MFI.scale({...p,x:genMa(SIM.k++)});
+  SIM.sm=SIM.sm===null?r.pc:SIM.sm+(r.pc-SIM.sm)/(SIM.tau+1);
+  const q=MFI.qds(r.iv,r.ov);
+  let send=SIM.last===null||q!==SIM.lastQ;
+  if(!send){
+    if(SIM.db==='abs')send=Math.abs(SIM.sm-SIM.last)>=SIM.th;
+    else{SIM.acc+=Math.abs(SIM.sm-SIM.last);send=SIM.acc>=SIM.th*10;}
+  }
+  if(send){SIM.last=SIM.sm;SIM.lastQ=q;SIM.acc=0;SIM.sent++;}else SIM.supp++;
+  SIM.buf.push({inp:r.pct,sm:SIM.sm,out:SIM.last,sent:send,fault:r.iv||r.ov});
+  if(SIM.buf.length>SIM.max)SIM.buf.shift();
+}
+function stats(){
+  const p=params();
+  $('stN').textContent=SIM.k;$('stS').textContent=SIM.sent;$('stP').textContent=SIM.supp;
+  $('stR').textContent=SIM.k?fmt(SIM.sent/(SIM.k/60),1):'0';
+  if(SIM.last===null){$('stV').textContent='–';return;}
+  const [lo,hi]=MFI.span(p.type);
+  $('stV').textContent=fmt(p.min+(SIM.last-lo)/(hi-lo)*(p.max-p.min));
+}
+function draw(){
+  const cv=$('cv'),dpr=window.devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  if(!W||!H)return;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);}
+  const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  const cs=getComputedStyle(document.documentElement),col=n=>cs.getPropertyValue(n).trim();
+  const p=params(),[lo,hi]=MFI.span(p.type),ymin=lo-(p.type==='lz'?30:15),ymax=hi+15;
+  const Lp=40,Rp=6,Tp=8,Bp=8,pw=W-Lp-Rp,ph=H-Tp-Bp,dx=pw/(SIM.max-1);
+  const X=i=>Lp+i*dx,Y=v=>Tp+(ymax-MFI.clamp(v,ymin,ymax))/(ymax-ymin)*ph;
+  g.font='11px "JetBrains Mono", ui-monospace, monospace';g.textAlign='right';g.textBaseline='middle';
+  const ticks=p.type==='bi'?[-100,-50,0,50,100]:[0,25,50,75,100];
+  ticks.forEach(v=>{const y=Math.round(Y(v))+.5;g.strokeStyle=col('--grid');g.lineWidth=1;g.beginPath();g.moveTo(Lp,y);g.lineTo(W-Rp,y);g.stroke();g.fillStyle=col('--muted');g.fillText(String(v),Lp-8,y);});
+  const B=SIM.buf;
+  g.fillStyle=col('--fault');
+  B.forEach((s,i)=>{if(s.fault)g.fillRect(X(i)-dx/2,Tp,dx+0.5,ph);});
+  if(!B.length)return;
+  const line=(key,c,w)=>{g.strokeStyle=c;g.lineWidth=w;g.lineJoin='round';g.beginPath();B.forEach((s,i)=>{const y=Y(s[key]);i?g.lineTo(X(i),y):g.moveTo(X(i),y);});g.stroke();};
+  line('inp',col('--in-line'),1.2);
+  line('sm',col('--sm-line'),2.2);
+  g.strokeStyle=col('--out-line');g.lineWidth=2.5;g.lineJoin='miter';g.beginPath();
+  B.forEach((s,i)=>{if(s.out===null)return;const y=Y(s.out);if(i===0||B[i-1].out===null)g.moveTo(X(i),y);else{g.lineTo(X(i),Y(B[i-1].out));g.lineTo(X(i),y);}});
+  g.stroke();
+  g.fillStyle=col('--signal');g.strokeStyle=col('--out-line');g.lineWidth=1.5;
+  B.forEach((s,i)=>{if(s.sent&&s.out!==null){g.beginPath();g.arc(X(i),Y(s.out),3.4,0,Math.PI*2);g.fill();g.stroke();}});
+}
+function tick(){step();draw();stats();}
+function setRun(on){
+  SIM.running=on;clearInterval(SIM.timer);
+  if(on)SIM.timer=setInterval(tick,240/SIM.speed);
+  $('run').textContent=on?'Stop':'Start';
+}
+function resetSim(prefill){
+  Object.assign(SIM,{buf:[],k:0,sm:null,last:null,lastQ:null,acc:0,sent:0,supp:0,faultLeft:0});
+  if(prefill)for(let i=0;i<160;i++)step();
+  draw();stats();
+}
+const simMsg=t=>{$('simMsg').textContent=t;};
+$('run').addEventListener('click',()=>setRun(!SIM.running));
+$('clr').addEventListener('click',()=>{resetSim(false);simMsg('');});
+$('spd').addEventListener('click',()=>{SIM.speed=SIM.speed===1?2:SIM.speed===2?4:1;$('spd').textContent=`Speed ${SIM.speed}x`;if(SIM.running)setRun(true);});
+$('brk').addEventListener('click',()=>{
+  SIM.fault='break';SIM.faultLeft=15;if(!SIM.running)setRun(true);
+  const p=params();
+  simMsg(p.type==='lz'?'Wire break: 0 mA is below 3.6 mA, so the value goes out with IV=1 at once, deadband or not.':`Wire break: the input drops to 0 mA, which a ${p.type==='bi'?'bipolar':'unipolar'} input reads as a valid value. Only live zero can tell a broken loop from zero.`);
+});
+$('ovr').addEventListener('click',()=>{SIM.fault='over';SIM.faultLeft=15;if(!SIM.running)setRun(true);simMsg('Overrange: the value is clamped at full scale and sent with OV=1. A change in quality is always sent.');});
+$('gen').addEventListener('change',()=>{SIM.gen=$('gen').value;});
+$('noise').addEventListener('input',()=>{SIM.noise=+$('noise').value;$('noiseO').textContent=fmt(SIM.noise,1)+' %';});
+$('tau').addEventListener('input',()=>{SIM.tau=+$('tau').value;$('tauO').textContent=SIM.tau?SIM.tau+' s':'off';});
+function thLabel(){$('thO').textContent=SIM.db==='abs'?fmt(SIM.th,1)+' %':fmt(SIM.th*10,0)+' %·s';}
+$('db').addEventListener('change',()=>{SIM.db=$('db').value;SIM.acc=0;thLabel();});
+$('th').addEventListener('input',()=>{SIM.th=+$('th').value;thLabel();});
+
+if(window.ResizeObserver)new ResizeObserver(draw).observe($('cv'));
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);}catch(_){}
+new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+fromQuery();
+renderAll();
+resetSim(true);
+setRun(!REDUCE);
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);
+})();
+</script>
+</body>
+</html>
